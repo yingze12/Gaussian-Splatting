@@ -9,6 +9,8 @@
 # For inquiries contact  george.drettakis@inria.fr
 #
 
+from utils.graphics_utils import vis_depth
+import cv2
 import torch
 from scene import Scene
 import os
@@ -30,12 +32,30 @@ except:
 def render_set(model_path, name, iteration, views, gaussians, pipeline, background, train_test_exp, separate_sh):
     render_path = os.path.join(model_path, name, "ours_{}".format(iteration), "renders")
     gts_path = os.path.join(model_path, name, "ours_{}".format(iteration), "gt")
+    depth_path = os.path.join(model_path, name, "ours_{}".format(iteration), "depth")
 
     makedirs(render_path, exist_ok=True)
     makedirs(gts_path, exist_ok=True)
+    makedirs(depth_path, exist_ok=True)
 
     for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
-        rendering = render(view, gaussians, pipeline, background, use_trained_exp=train_test_exp, separate_sh=separate_sh)["render"]
+        out_results = render(view, gaussians, pipeline, background, use_trained_exp=train_test_exp, separate_sh=separate_sh)
+        rendering = out_results["render"]
+
+        depth_tensor = out_results["depth"]
+
+        if depth_tensor is None:
+            print(f"❌ 第 {idx} 张视图没有 depth！跳过")
+            continue
+
+        if depth_tensor.dim() == 3:
+            depth = depth_tensor[0].float().cpu().numpy()
+        elif depth_tensor.dim() == 2:
+            depth = depth_tensor.float().cpu().numpy()
+        else:
+            print("⚠️ Unexpected depth shape:", depth_tensor.shape)
+            continue
+
         gt = view.original_image[0:3, :, :]
 
         if args.train_test_exp:
@@ -44,6 +64,11 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
 
         torchvision.utils.save_image(rendering, os.path.join(render_path, '{0:05d}'.format(idx) + ".png"))
         torchvision.utils.save_image(gt, os.path.join(gts_path, '{0:05d}'.format(idx) + ".png"))
+
+        depth_vis, _ = vis_depth(depth)
+        depth_file = os.path.join(depth_path, '{:05d}.png'.format(idx))
+        cv2.imwrite(depth_file, depth_vis[..., ::-1])
+        print(f"✅ 深度图保存成功: {depth_file}")
 
 def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParams, skip_train : bool, skip_test : bool, separate_sh: bool):
     with torch.no_grad():

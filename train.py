@@ -47,16 +47,23 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
+    # 初始化高斯模型，用于表示场景中的每个点的3D高斯
     gaussians = GaussianModel(dataset.sh_degree, opt.optimizer_type)
+    # 初始化场景对象，加载数据集和相机参数
     scene = Scene(dataset, gaussians)
+    # 为高斯模型参数设置优化器和学习率调度器
     gaussians.training_setup(opt)
+
+    # 如果提供了预训练模型参数，则加载模型参数并恢复训练进度
     if checkpoint:
         (model_params, first_iter) = torch.load(checkpoint)
         gaussians.restore(model_params, opt)
 
+    # 设置背景颜色，一般用Blender制作的合成数据才需要改变设置，Colmap合成的数据不需要
     bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 
+    # 创建CUDA事件用于计时
     iter_start = torch.cuda.Event(enable_timing = True)
     iter_end = torch.cuda.Event(enable_timing = True)
 
@@ -68,9 +75,12 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     ema_loss_for_log = 0.0
     ema_Ll1depth_for_log = 0.0
 
+    # 使用tqdm库创建进度条，追踪训练进度
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
     for iteration in range(first_iter, opt.iterations + 1):
+
+        # 网页可视化工具初始化 在默认的训练设置中是用不到的
         if network_gui.conn == None:
             network_gui.try_connect()
         while network_gui.conn != None:
@@ -86,14 +96,18 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             except Exception as e:
                 network_gui.conn = None
 
+        # 记录迭代开始时间
         iter_start.record()
 
+        # 根据当前迭代次数更新学习率
         gaussians.update_learning_rate(iteration)
 
+        # 每1000次迭代，提升球谐函数的次数以改进模型复杂度
         # Every 1000 its we increase the levels of SH up to a maximum degree
         if iteration % 1000 == 0:
             gaussians.oneupSHdegree()
 
+        # 随机选择一个训练用的相机视角
         # Pick a random Camera
         if not viewpoint_stack:
             viewpoint_stack = scene.getTrainCameras().copy()
@@ -102,12 +116,15 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         viewpoint_cam = viewpoint_stack.pop(rand_idx)
         vind = viewpoint_indices.pop(rand_idx)
 
+        # 如果达到调试起始点，启用调试模式
         # Render
         if (iteration - 1) == debug_from:
             pipe.debug = True
 
+        # 根据设置决定是否使用随机背景颜色
         bg = torch.rand((3), device="cuda") if opt.random_background else background
 
+        # 渲染当前视角的图像
         render_pkg = render(viewpoint_cam, gaussians, pipe, bg, use_trained_exp=dataset.train_test_exp, separate_sh=SPARSE_ADAM_AVAILABLE)
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
 
@@ -115,16 +132,18 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             alpha_mask = viewpoint_cam.alpha_mask.cuda()
             image *= alpha_mask
 
+        # 计算渲染图像与真实图像之间的损失
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
-        Ll1 = l1_loss(image, gt_image)
+        Ll1 = l1_loss(image, gt_image) # l1的光度误差损失
         if FUSED_SSIM_AVAILABLE:
             ssim_value = fused_ssim(image.unsqueeze(0), gt_image.unsqueeze(0))
         else:
-            ssim_value = ssim(image, gt_image)
+            ssim_value = ssim(image, gt_image) # ssim的损失
 
         loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim_value)
 
+        # 深度正则化损失（可选）
         # Depth regularization
         Ll1depth_pure = 0.0
         if depth_l1_weight(iteration) > 0 and viewpoint_cam.depth_reliable:
@@ -141,6 +160,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         loss.backward()
 
+        # 记录迭代结束时间
         iter_end.record()
 
         with torch.no_grad():
@@ -160,6 +180,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)
 
+            # 在指定迭代区间内，对3D高斯模型进行增密和修剪
             # Densification
             if iteration < opt.densify_until_iter:
                 # Keep track of max radii in image-space for pruning
@@ -173,6 +194,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                     gaussians.reset_opacity()
 
+            # 执行优化器的一步，并准备下一次迭代
             # Optimizer step
             if iteration < opt.iterations:
                 gaussians.exposure_optimizer.step()
@@ -185,6 +207,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     gaussians.optimizer.step()
                     gaussians.optimizer.zero_grad(set_to_none = True)
 
+            # 当迭代次数达到了需要保存这个模型参数的次数的时候，当前训练好的模型参数进行一下保存   定期保存checkpoint
             if (iteration in checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
                 torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")

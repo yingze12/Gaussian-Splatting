@@ -9,6 +9,7 @@
 # For inquiries contact  george.drettakis@inria.fr
 #
 
+import cv2
 import torch
 import math
 import numpy as np
@@ -75,3 +76,15 @@ def fov2focal(fov, pixels):
 
 def focal2fov(focal, pixels):
     return 2*math.atan(pixels/(2*focal))
+
+def vis_depth(depth, percentile=95):
+    if isinstance(depth, torch.Tensor):
+        depth = depth.detach().cpu().numpy()
+
+    vmax = np.percentile(depth, percentile)
+    normalizer = lambda x: np.clip(x / vmax, 0, 1)
+
+    depth_normalized = normalizer(depth)
+    depth_colored = cv2.applyColorMap((depth_normalized * 255).astype(np.uint8), cv2.COLORMAP_TURBO)
+
+    return depth_colored, depth_normalized

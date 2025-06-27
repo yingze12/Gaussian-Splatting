@@ -24,28 +24,29 @@ from utils.sh_utils import SH2RGB
 from scene.gaussian_model import BasicPointCloud
 
 class CameraInfo(NamedTuple):
-    uid: int
-    R: np.array
-    T: np.array
-    FovY: np.array
-    FovX: np.array
-    depth_params: dict
-    image_path: str
-    image_name: str
-    depth_path: str
-    width: int
-    height: int
-    is_test: bool
+    uid: int # 相机序号
+    R: np.array # 旋转矩阵
+    T: np.array # 位移向量
+    FovY: np.array # 图像Y方向视场角
+    FovX: np.array # 图像X方向视场角
+    depth_params: dict # 深度信息
+    image_path: str # 图像路径
+    image_name: str # 图像名字
+    depth_path: str # 深度路径
+    width: int # 图像宽
+    height: int # 图像高
+    is_test: bool # 是否测试
 
 class SceneInfo(NamedTuple):
-    point_cloud: BasicPointCloud
-    train_cameras: list
-    test_cameras: list
-    nerf_normalization: dict
-    ply_path: str
-    is_nerf_synthetic: bool
+    point_cloud: BasicPointCloud # 点云
+    train_cameras: list # 训练相机序列
+    test_cameras: list # 测试相机序列
+    nerf_normalization: dict # 相机中心化
+    ply_path: str # 高斯点路径
+    is_nerf_synthetic: bool # 是否是Blender场景
 
-def getNerfppNorm(cam_info):
+# 进行训练视角相机中心化，得到场景半径
+def getNerfppNorm(cam_info): 
     def get_center_and_diag(cam_centers):
         cam_centers = np.hstack(cam_centers)
         avg_cam_center = np.mean(cam_centers, axis=1, keepdims=True)
@@ -61,13 +62,14 @@ def getNerfppNorm(cam_info):
         C2W = np.linalg.inv(W2C)
         cam_centers.append(C2W[:3, 3:4])
 
-    center, diagonal = get_center_and_diag(cam_centers)
-    radius = diagonal * 1.1
+    center, diagonal = get_center_and_diag(cam_centers) # 相机的中心和半径
+    radius = diagonal * 1.1 # 这个参数与点云优化的学习率有关
 
     translate = -center
 
     return {"translate": translate, "radius": radius}
 
+# 读取Colmap相机参数和图像   将相机的内外参解析成旋转矩阵和位移向量以及焦距的信息   结合图像的信息来构建用于3DGSD训练和测试的相机的信息
 def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_folder, depths_folder, test_cam_names_list):
     cam_infos = []
     for idx, key in enumerate(cam_extrinsics):
@@ -86,7 +88,7 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_fold
         T = np.array(extr.tvec)
 
         if intr.model=="SIMPLE_PINHOLE":
-            focal_length_x = intr.params[0]
+            focal_length_x = intr.params[0] #焦距主要和相机的内参有关
             FovY = focal2fov(focal_length_x, height)
             FovX = focal2fov(focal_length_x, width)
         elif intr.model=="PINHOLE":
@@ -117,7 +119,8 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_fold
     sys.stdout.write('\n')
     return cam_infos
 
-def fetchPly(path):
+# 读取点云的位置，颜色和表面法线信息
+def fetchPly(path): # 点云的读取
     plydata = PlyData.read(path)
     vertices = plydata['vertex']
     positions = np.vstack([vertices['x'], vertices['y'], vertices['z']]).T
@@ -125,7 +128,8 @@ def fetchPly(path):
     normals = np.vstack([vertices['nx'], vertices['ny'], vertices['nz']]).T
     return BasicPointCloud(points=positions, colors=colors, normals=normals)
 
-def storePly(path, xyz, rgb):
+# 保存点云的位置和颜色信息，用于3DGS初始化
+def storePly(path, xyz, rgb): # 点云的存储
     # Define the dtype for the structured array
     dtype = [('x', 'f4'), ('y', 'f4'), ('z', 'f4'),
             ('nx', 'f4'), ('ny', 'f4'), ('nz', 'f4'),
@@ -142,6 +146,7 @@ def storePly(path, xyz, rgb):
     ply_data = PlyData([vertex_element])
     ply_data.write(path)
 
+# 读取Colmap的数据
 def readColmapSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8):
     try:
         cameras_extrinsic_file = os.path.join(path, "sparse/0", "images.bin")
@@ -309,6 +314,7 @@ def readNerfSyntheticInfo(path, white_background, depths, eval, extension=".png"
                            is_nerf_synthetic=True)
     return scene_info
 
+# 包含了两种数据集有关的函数，Colmap真实场景下的数据集，Blender虚拟合成下的数据集
 sceneLoadTypeCallbacks = {
     "Colmap": readColmapSceneInfo,
     "Blender" : readNerfSyntheticInfo
